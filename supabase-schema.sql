@@ -74,8 +74,11 @@ create table if not exists app.mission_done (
 create table if not exists app.expired_links (
   token   text primary key,
   room_id uuid not null references app.rooms(id) on delete cascade,
-  reason  text not null check (reason in ('started','reissued'))
+  reason  text not null
 );
+alter table app.expired_links drop constraint if exists expired_links_reason_check;
+alter table app.expired_links add constraint expired_links_reason_check
+  check (reason in ('started','reissued','removed'));
 
 alter table app.expired_links enable row level security;
 alter table app.missions      enable row level security;
@@ -156,6 +159,9 @@ begin
   if not found then
     if exists (select 1 from app.expired_links where token = p_token and reason = 'started') then
       raise exception 'ROOM_STARTED';
+    end if;
+    if exists (select 1 from app.expired_links where token = p_token and reason = 'removed') then
+      raise exception 'REMOVED';
     end if;
     raise exception 'INVALID_LINK';
   end if;
@@ -347,6 +353,10 @@ begin
   perform app.refresh_room(m.room_id);
   select * into r from app.rooms where id = m.room_id;
   if r.mode <> 'mission' or r.status not in ('waiting','active') then raise exception 'NOT_EDITABLE'; end if;
+  if exists (select 1 from unnest(coalesce(p_wishes,'{}')) w
+              where w ~ '(현금|상품권|기프티콘|[0-9]+\s*(만\s*)?원)') then
+    raise exception 'MONEY_WISH';
+  end if;
   update app.members
      set wishes = array(select left(btrim(w), 60) from unnest(coalesce(p_wishes,'{}')) w
                          where btrim(w) <> '' limit 3)
@@ -495,14 +505,58 @@ begin
   if not found then raise exception 'NOT_REVEALABLE'; end if;
 end $$;
 
+-- 대표: 시작 전 명단에 사람 추가
+create or replace function public.add_member(p_token text, p_name text) returns void
+language plpgsql security definer set search_path = app, public, extensions as $$
+declare m app.members; r app.rooms; v text := btrim(coalesce(p_name, ''));
+begin
+  m := app.host_by_token(p_token);
+  select * into r from app.rooms where id = m.room_id for update;
+  if r.status <> 'waiting' then raise exception 'ALREADY_STARTED'; end if;
+  if v = '' then raise exception 'NAME_REQUIRED'; end if;
+  if char_length(v) > 20 then raise exception 'NAME_TOO_LONG'; end if;
+  if (select count(*) from app.members where room_id = r.id) >= 30 then raise exception 'MAX_30'; end if;
+  if exists (select 1 from app.members where room_id = r.id
+              and lower(regexp_replace(name, '\s', '', 'g')) = lower(regexp_replace(v, '\s', '', 'g'))) then
+    raise exception 'DUPLICATE_NAME';
+  end if;
+  insert into app.members (room_id, name, token) values (r.id, v, app.new_token());
+end $$;
+
+-- 대표: 시작 전 명단에서 빼기 (대표 본인 제외)
+create or replace function public.remove_member(p_token text, p_member uuid) returns void
+language plpgsql security definer set search_path = app, public, extensions as $$
+declare m app.members; r app.rooms; v_old text;
+begin
+  m := app.host_by_token(p_token);
+  select * into r from app.rooms where id = m.room_id for update;
+  if r.status <> 'waiting' then raise exception 'ALREADY_STARTED'; end if;
+  if p_member = m.id then raise exception 'BAD_MEMBER'; end if;
+  select token into v_old from app.members where id = p_member and room_id = r.id;
+  if not found then raise exception 'BAD_MEMBER'; end if;
+  insert into app.expired_links (token, room_id, reason) values (v_old, r.id, 'removed') on conflict do nothing;
+  delete from app.members where id = p_member;
+end $$;
+
+-- 대표: 방 삭제 (모든 데이터 즉시 삭제)
+create or replace function public.delete_room(p_token text) returns void
+language plpgsql security definer set search_path = app, public, extensions as $$
+declare m app.members;
+begin
+  m := app.host_by_token(p_token);
+  delete from app.rooms where id = m.room_id;
+end $$;
+
 -- 사이트(anon)에는 RPC 실행 권한만 준다
 revoke all on function public.create_room(jsonb), public.join_room(text), public.my_view(text),
   public.save_wishes(text, text[]), public.set_mission_done(text, int, boolean),
   public.submit_guess(text, uuid), public.host_overview(text), public.start_room(text),
-  public.reissue_link(text, uuid), public.finish_now(text), public.force_reveal(text)
+  public.reissue_link(text, uuid), public.finish_now(text), public.force_reveal(text),
+  public.add_member(text, text), public.remove_member(text, uuid), public.delete_room(text)
   from public;
 grant execute on function public.create_room(jsonb), public.join_room(text), public.my_view(text),
   public.save_wishes(text, text[]), public.set_mission_done(text, int, boolean),
   public.submit_guess(text, uuid), public.host_overview(text), public.start_room(text),
-  public.reissue_link(text, uuid), public.finish_now(text), public.force_reveal(text)
+  public.reissue_link(text, uuid), public.finish_now(text), public.force_reveal(text),
+  public.add_member(text, text), public.remove_member(text, uuid), public.delete_room(text)
   to anon, authenticated;

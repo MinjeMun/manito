@@ -148,3 +148,4 @@ select.input{border:2px solid var(--green)}
 .copycard{background:#fff;border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:10px;width:100%;max-width:400px}
 .copycard textarea{width:100%;border:1px solid var(--line);border-radius:6px;padding:8px;font-size:14px}
 .boot-fail{padding:60px 20px;text-align:center;display:flex;flex-direction:column;gap:14px;align-items:center;color:var(--ink);line-height:1.7}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}

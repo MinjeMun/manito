@@ -9,7 +9,10 @@ window.__appReady = true;
 
 // ---------------------------------------------------------------- 공통 도우미
 const ERR = {
-  INVALID_LINK: '링크가 맞지 않아요. 대표에게 새 링크를 받아주세요.',
+  INVALID_LINK: '링크가 맞지 않거나 삭제된 방이에요. 대표에게 새 링크를 받아주세요.',
+  REMOVED: '대표가 명단에서 뺐어요. 궁금한 점은 대표에게 물어봐주세요.',
+  MONEY_WISH: '금품이나 금액은 적을 수 없어요 🙏',
+  NAME_REQUIRED: '이름을 적어주세요.',
   NOT_HOST: '대표만 할 수 있어요.',
   HOST_NAME_REQUIRED: '내 이름을 적어주세요.',
   ROOM_NAME_REQUIRED: '방 이름을 적어주세요.',
@@ -49,8 +52,10 @@ async function rpc(fn, args) {
   return data;
 }
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-let toastTimer;
+let toastTimer, toastAt = 0;
+function hideToast() { document.getElementById('toast').classList.remove('show'); }
 function toast(msg) {
+  toastAt = Date.now();
   const t = document.getElementById('toast');
   t.textContent = msg;
   t.classList.add('show');
@@ -161,6 +166,9 @@ document.addEventListener('click', (ev) => {
   const fn = actions[el.dataset.act];
   if (fn) fn(el, ev);
 });
+document.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Enter' && ev.target.id === 'add-name') { ev.preventDefault(); actions.addm(); }
+});
 document.addEventListener('input', (ev) => {
   const el = ev.target.closest('[data-in]');
   if (el && actions[el.dataset.in]) actions[el.dataset.in](el, ev);
@@ -191,6 +199,7 @@ function parseHash() {
 }
 async function route() {
   const r = parseHash();
+  if (Date.now() - toastAt > 800) hideToast();
   S.route = r.name; S.confirm = null;
   if (r.name !== 'new') S.form = null;
   if (r.name === 'home') { render(); refreshHome(); return; }
@@ -220,7 +229,7 @@ async function loadRoom(silent) {
     if (token !== S.token) return;
     if (silent) return;
     S.view = null; S.error = e;
-    if (e.code === 'INVALID_LINK' || e.code === 'ROOM_STARTED') forgetRoom(token);
+    if (['INVALID_LINK', 'ROOM_STARTED', 'REMOVED'].includes(e.code)) forgetRoom(token);
   }
   if (silent && isTyping()) return;
   render();
@@ -260,7 +269,7 @@ function viewHome() {
   const list = loadRooms();
   const rows = list.map((x) => {
     const v = S.homeInfo[x.token];
-    if (v && (v.error === 'INVALID_LINK' || v.error === 'ROOM_STARTED')) {
+    if (v && ['INVALID_LINK', 'ROOM_STARTED', 'REMOVED'].includes(v.error)) {
       return `<div class="tr" style="grid-template-columns:minmax(0,1fr) 88px"><div class="col"><b>${esc(x.name)}</b><span class="small">링크가 만료됐어요</span></div><div><button class="mini warn" data-act="forget" data-token="${esc(x.token)}">목록에서 빼기</button></div></div>`;
     }
     const st = v && v.room ? statusOf(v) : { label: '…', cls: 'n', when: '' };
@@ -591,14 +600,15 @@ function tabAdmin() {
   const v = S.view, r = v.room, h = S.host || { members: [] };
   const joined = h.members.filter((m) => m.joined).length;
   const isMission = r.mode === 'mission';
-  const cols = `grid-template-columns:30px minmax(0,1fr) ${isMission ? '52px ' : ''}120px`;
+  const waiting = r.status === 'waiting';
+  const cols = `grid-template-columns:30px minmax(0,1fr) ${isMission ? '52px ' : ''}${waiting ? 172 : 120}px`;
   const rows = h.members.map((m, i) => {
     let state = m.joined ? '<span class="ok">참여</span>' : '<span class="no">대기</span>';
     if (r.status === 'guessing') state = m.guessed ? '<span class="ok">제출</span>' : '<span class="no">미제출</span>';
     return `<div class="tr" style="${cols}"><div class="num">${i + 1}</div>
       <div class="col"><b>${esc(m.name)}${m.is_host ? ' 👑' : ''}</b><span class="small">${state}</span></div>
       ${isMission ? `<div style="font-size:12px;justify-content:center">${m.wish_done ? '<span class="ok">위시✓</span>' : '<span class="small">위시-</span>'}</div>` : ''}
-      <div style="gap:4px;padding:4px;justify-content:flex-end">${m.is_host ? '<button class="mini" data-act="copyme">내 링크</button>' : `${m.token ? `<button class="mini" data-act="share" data-id="${m.id}" aria-label="${esc(m.name)}님 링크 보내기">보내기</button>` : '<span class="small ok" style="padding:0 4px">전달됨</span>'}<button class="mini warn${S.confirm === 're' + m.id ? ' on' : ''}" data-act="reissue" data-id="${m.id}" aria-label="${esc(m.name)}님 링크 재발급" style="min-width:44px">${S.confirm === 're' + m.id ? '확인' : '↻'}</button>`}</div></div>`;
+      <div style="gap:4px;padding:4px;justify-content:flex-end">${m.is_host ? '<button class="mini" data-act="copyme">내 링크</button>' : `${m.token ? `<button class="mini" data-act="share" data-id="${m.id}" aria-label="${esc(m.name)}님 링크 보내기">보내기</button>` : '<span class="small ok" style="padding:0 4px">전달됨</span>'}<button class="mini warn${S.confirm === 're' + m.id ? ' on' : ''}" data-act="reissue" data-id="${m.id}" aria-label="${esc(m.name)}님 링크 재발급" style="min-width:44px">${S.confirm === 're' + m.id ? '확인' : '↻'}</button>${waiting ? `<button class="mini warn${S.confirm === 'rm' + m.id ? ' on' : ''}" data-act="remove" data-id="${m.id}" aria-label="${esc(m.name)}님 명단에서 빼기" style="min-width:44px">${S.confirm === 'rm' + m.id ? '빼기' : '✕'}</button>` : ''}`}</div></div>`;
   }).join('');
   let action = '';
   if (r.status === 'waiting') {
@@ -615,8 +625,10 @@ function tabAdmin() {
     <div class="note red" role="note"><span aria-hidden="true">👑</span><div class="stack" style="gap:6px"><p><b>대표 링크는 다시 발급할 수 없어요.</b> 잃어버리면 방을 관리할 수 없으니 '내 링크'를 눌러 카톡 나와의 채팅 등에 꼭 저장해두세요.</p></div></div>
     ${action}
     <div class="sheet"><div class="tr th" style="${cols}"><div></div><div>이름 · 상태</div>${isMission ? '<div>위시</div>' : ''}<div style="justify-content:flex-end">링크</div></div>${rows}</div>
+    ${waiting ? `<div class="row"><label for="add-name" class="sr">추가할 이름</label><input id="add-name" class="input" maxlength="20" placeholder="빠뜨린 사람 이름 (${h.members.length}/30명)" ${h.members.length >= 30 ? 'disabled' : ''}><button class="mini" style="min-width:72px;height:46px" data-act="addm" ${h.members.length >= 30 ? 'disabled' : ''}>＋ 추가</button></div>` : ''}
     <p class="small">참여를 마친 사람의 링크는 비밀 유지를 위해 대표에게도 보이지 않아요('전달됨'). ↻ 재발급: 링크를 잃어버렸거나 잘못 보냈을 때 새 링크를 만들어요. 이전 링크는 바로 막혀요.</p>
-    <div class="note gray" role="note"><span aria-hidden="true">🔒</span><p>매칭 결과는 대표도 볼 수 없어요. ${isMission ? '정답 공개 때 모두 함께 확인해요.' : '교환하는 날 서로 확인해요.'} 명단을 바꾸려면 새 방을 만들어 주세요.</p></div>`;
+    <div class="note gray" role="note"><span aria-hidden="true">🔒</span><p>매칭 결과는 대표도 볼 수 없어요. ${isMission ? '정답 공개 때 모두 함께 확인해요.' : '교환하는 날 서로 확인해요.'} ${waiting ? '명단은 매칭 시작 전까지만 추가·뺄 수 있어요.' : '매칭이 시작돼서 명단은 더 바꿀 수 없어요.'}</p></div>
+    <section class="stack" style="margin-top:8px"><button class="btn line red sm" data-act="delroom">${twoStep('delroom', '🗑 이 방 삭제하기', '한 번 더 누르면 모든 내용이 삭제돼요')}</button><p class="small">삭제하면 참여자 모두의 링크가 막히고 되돌릴 수 없어요.</p></section>`;
   return { cell: '관리', fx: `=참여_현황(${joined}/${h.members.length})`, body };
 }
 actions.share = (el) => {
@@ -635,6 +647,33 @@ actions.reissue = (el) => {
     await rpc('reissue_link', { p_token: S.token, p_member: id });
     S.host = await rpc('host_overview', { p_token: S.token });
     render(); toast('새 링크를 만들었어요. 보내기를 눌러 다시 보내주세요 🔗');
+  });
+};
+actions.addm = () => busy(async () => {
+  const el = document.getElementById('add-name');
+  const name = (el.value || '').trim();
+  if (!name) throw new Error(ERR.NAME_REQUIRED);
+  await rpc('add_member', { p_token: S.token, p_name: name });
+  S.host = await rpc('host_overview', { p_token: S.token });
+  await loadRoom(true); render();
+  toast(`${name}님을 추가했어요. 링크를 보내주세요 🔗`);
+});
+actions.remove = (el) => {
+  const id = el.dataset.id;
+  if (!armed('rm' + id)) return;
+  busy(async () => {
+    await rpc('remove_member', { p_token: S.token, p_member: id });
+    S.host = await rpc('host_overview', { p_token: S.token });
+    await loadRoom(true); render(); toast('명단에서 뺐어요');
+  });
+};
+actions.delroom = () => {
+  if (!armed('delroom')) return;
+  busy(async () => {
+    await rpc('delete_room', { p_token: S.token });
+    forgetRoom(S.token); S.token = null; S.view = null; S.host = null;
+    location.hash = '#/';
+    toast('방을 삭제했어요');
   });
 };
 actions.start = () => { if (!armed('start')) return; busy(async () => { await rpc('start_room', { p_token: S.token }); S.tab = null; await loadRoom(); toast('매칭 완료! 🎲 각자 마니또가 공개됐어요'); }); };
