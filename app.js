@@ -5,6 +5,7 @@ const sb = createClient(SUPABASE_URL, SUPABASE_KEY, {
   auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false }
 });
 const $app = document.getElementById('app');
+window.__appReady = true;
 
 // ---------------------------------------------------------------- 공통 도우미
 const ERR = {
@@ -25,14 +26,24 @@ const ERR = {
   MISSION_LOCKED: '아직 열리지 않은 미션이에요.',
   NOT_GUESSING: '지금은 예상 제출 기간이 아니에요.',
   BAD_GUESS: '다른 사람을 골라주세요.',
-  NOT_REVEALABLE: '지금은 공개할 수 없어요.'
+  NOT_REVEALABLE: '지금은 공개할 수 없어요.',
+  ROOM_STARTED: '이미 매칭이 시작돼서 이 방에는 참여할 수 없어요. 대표에게 문의해주세요.',
+  PAST_DATE: '지난 날짜는 고를 수 없어요.',
+  MISSION_COUNT_OVER_DAYS: '미션 횟수는 기간 일수보다 많을 수 없어요.',
+  PERIOD_OVER: '기간이 이미 지나서 시작할 수 없어요. 새 방을 만들어주세요.',
+  BAD_MEMBER: '대상을 찾을 수 없어요.',
+  NETWORK: '서버에 연결할 수 없어요. 인터넷 연결을 확인하고 잠시 후 다시 시도해주세요.'
 };
+const isNet = (msg) => /fetch|network|load failed|timeout|ECONN|abort/i.test(msg || '');
 async function rpc(fn, args) {
-  const { data, error } = await sb.rpc(fn, args);
+  let res;
+  try { res = await sb.rpc(fn, args); } catch (err) { res = { error: { message: String(err && err.message || err) } }; }
+  const { data, error } = res;
   if (error) {
-    const code = Object.keys(ERR).find((k) => (error.message || '').includes(k));
-    const e = new Error(code ? ERR[code] : '잠시 후 다시 시도해주세요. (' + (error.message || '연결 오류') + ')');
-    e.code = code;
+    let code = Object.keys(ERR).find((k) => (error.message || '').includes(k));
+    if (!code && isNet(error.message)) code = 'NETWORK';
+    const e = new Error(code ? ERR[code] : '잠시 후 다시 시도해주세요.');
+    e.code = code || 'UNKNOWN';
     throw e;
   }
   return data;
@@ -54,6 +65,24 @@ async function copyText(text) {
     let ok = false; try { ok = document.execCommand('copy'); } catch (_) {}
     ta.remove(); return ok;
   }
+}
+function showCopyBox(text) {
+  const old = document.getElementById('copybox'); if (old) old.remove();
+  const box = document.createElement('div');
+  box.id = 'copybox'; box.className = 'copybox';
+  box.innerHTML = `<div class="copycard"><b>아래 내용을 길게 눌러 복사해주세요</b><textarea readonly rows="6"></textarea><button class="btn sm" type="button">닫기</button></div>`;
+  box.querySelector('textarea').value = text;
+  box.querySelector('button').onclick = () => box.remove();
+  document.body.appendChild(box);
+  box.querySelector('textarea').select();
+}
+const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+async function shareOrCopy(text, label) {
+  if (isMobile && navigator.share) {
+    try { await navigator.share({ text }); return; } catch (e) { if (e && e.name === 'AbortError') return; }
+  }
+  if (await copyText(text)) toast(`${label} 복사했어요. 카톡에 붙여넣으세요 📋`);
+  else showCopyBox(text);
 }
 const linkFor = (token) => location.origin + location.pathname + '#/r/' + token;
 const inviteText = (room, name, token) =>
@@ -82,6 +111,7 @@ function rememberRoom(token, v) {
   list.unshift({ token, roomId: v.room.id, name: v.room.name, mode: v.room.mode });
   saveRooms(list);
 }
+const normName = (s) => s.replace(/\s/g, '').toLowerCase();
 function forgetRoom(token) { saveRooms(loadRooms().filter((x) => x.token !== token)); }
 
 // ---------------------------------------------------------------- 화면 틀
@@ -162,6 +192,7 @@ function parseHash() {
 async function route() {
   const r = parseHash();
   S.route = r.name; S.confirm = null;
+  if (r.name !== 'new') S.form = null;
   if (r.name === 'home') { render(); refreshHome(); return; }
   if (r.name === 'new') { if (!S.form) S.form = newForm(); render(); return; }
   if (r.name === 'room') {
@@ -189,7 +220,7 @@ async function loadRoom(silent) {
     if (token !== S.token) return;
     if (silent) return;
     S.view = null; S.error = e;
-    if (e.code === 'INVALID_LINK') forgetRoom(token);
+    if (e.code === 'INVALID_LINK' || e.code === 'ROOM_STARTED') forgetRoom(token);
   }
   if (silent && isTyping()) return;
   render();
@@ -229,7 +260,7 @@ function viewHome() {
   const list = loadRooms();
   const rows = list.map((x) => {
     const v = S.homeInfo[x.token];
-    if (v && v.error === 'INVALID_LINK') {
+    if (v && (v.error === 'INVALID_LINK' || v.error === 'ROOM_STARTED')) {
       return `<div class="tr" style="grid-template-columns:minmax(0,1fr) 88px"><div class="col"><b>${esc(x.name)}</b><span class="small">링크가 만료됐어요</span></div><div><button class="mini warn" data-act="forget" data-token="${esc(x.token)}">목록에서 빼기</button></div></div>`;
     }
     const st = v && v.room ? statusOf(v) : { label: '…', cls: 'n', when: '' };
@@ -252,8 +283,12 @@ function newForm() {
   const t = todayKST();
   return { mode: 'mission', name: '', host: '', start: t, end: addDays(t, 14), count: 4, style: '대면', gift: addDays(t, 14), budget: '2만 원', custom: '', names: ['', '', '', ''] };
 }
+const daysOf = (f) => (f.start && f.end && f.end >= f.start ? diffDays(f.end, f.start) + 1 : 1);
+const maxCount = (f) => Math.min(10, daysOf(f));
 function viewCreate() {
   const f = S.form;
+  const today = todayKST();
+  if (f.count > maxCount(f)) f.count = maxCount(f);
   const isGift = f.mode === 'gift';
   const budgets = ['상한 없음', '1만 원', '2만 원', '3만 원', '5만 원', '직접 입력'];
   const total = f.names.filter((n) => n.trim()).length + (f.host.trim() ? 1 : 0);
@@ -266,18 +301,18 @@ function viewCreate() {
         <button type="button" class="mode gift${isGift ? ' on' : ''}" data-act="fmode" data-v="gift"><b>🎁 선물교환형</b><span>마니또 지정만. 만나는 날 선물 교환</span></button>
       </div></div>
     ${isGift ? `
-      <div class="field"><label for="f-gift">선물 교환하는 날</label><input id="f-gift" type="date" class="input" value="${esc(f.gift)}" data-in="fset" data-k="gift"><span class="small">매칭하면 바로 각자 선물할 사람이 보여요. 미션·위시리스트·정답 맞히기는 없어요.</span></div>
+      <div class="field"><label for="f-gift">선물 교환하는 날</label><input id="f-gift" type="date" class="input" min="${today}" value="${esc(f.gift)}" data-in="fset" data-k="gift"><span class="small">매칭하면 바로 각자 선물할 사람이 보여요. 미션·위시리스트·정답 맞히기는 없어요.</span></div>
       <div class="field"><span class="label">💰 선물 금액 상한</span>
         <div class="pills">${budgets.map((b) => `<button type="button" class="${f.budget === b ? 'on' : ''}" data-act="fbudget" data-v="${b}">${b}</button>`).join('')}</div>
         ${f.budget === '직접 입력' ? `<div class="row"><label for="f-custom" class="small">직접 입력</label><input id="f-custom" class="input" style="width:150px;font-family:var(--mono)" inputmode="numeric" placeholder="15000" value="${esc(f.custom)}" data-in="fset" data-k="custom"><span>원 이하</span></div>` : ''}
         <span class="small">참여자 모두의 화면에 "선물은 OO 이하"로 표시돼요.</span></div>`
     : `
       <div class="grid2">
-        <div class="field"><label for="f-start">시작일</label><input id="f-start" type="date" class="input" value="${esc(f.start)}" data-in="fset" data-k="start"></div>
-        <div class="field"><label for="f-end">종료일</label><input id="f-end" type="date" class="input" value="${esc(f.end)}" data-in="fset" data-k="end"></div>
+        <div class="field"><label for="f-start">시작일</label><input id="f-start" type="date" class="input" min="${today}" value="${esc(f.start)}" data-in="fset" data-k="start"></div>
+        <div class="field"><label for="f-end">종료일</label><input id="f-end" type="date" class="input" min="${esc(f.start || today)}" value="${esc(f.end)}" data-in="fset" data-k="end"></div>
       </div>
       <div class="field"><span class="label">미션 횟수</span>
-        <div class="step"><button type="button" aria-label="미션 횟수 줄이기" data-act="fcount" data-v="-1">−</button><b>${f.count}</b><button type="button" aria-label="미션 횟수 늘리기" data-act="fcount" data-v="1">+</button><span class="small" style="flex:1">기간을 ${f.count}등분해 자동으로 열려요</span></div></div>
+        <div class="step"><button type="button" aria-label="미션 횟수 줄이기" data-act="fcount" data-v="-1">−</button><b>${f.count}</b><button type="button" aria-label="미션 횟수 늘리기" data-act="fcount" data-v="1">+</button><span class="small" style="flex:1">기간을 ${f.count}등분해 자동으로 열려요 (최대 ${maxCount(f)}회)</span></div></div>
       <div class="field"><span class="label">미션 방식</span>
         <div class="pills green">${['대면', '비대면'].map((s) => `<button type="button" class="${f.style === s ? 'on' : ''}" data-act="fstyle" data-v="${s}">${s === '대면' ? '🏢 대면 (자주 만나요)' : '📱 비대면 (단톡·SNS)'}</button>`).join('')}</div></div>`}
     <div class="field">
@@ -294,12 +329,13 @@ function viewCreate() {
 }
 actions.fset = (el) => {
   S.form[el.dataset.k] = el.value;
+  if (['start', 'end'].includes(el.dataset.k)) { if (S.form.count > maxCount(S.form)) S.form.count = maxCount(S.form); const s = document.querySelector('.step b'); if (s) s.textContent = S.form.count; const h = document.querySelector('.step .small'); if (h) h.textContent = `기간을 ${S.form.count}등분해 자동으로 열려요 (최대 ${maxCount(S.form)}회)`; const e = document.getElementById('f-end'); if (e && S.form.start) e.min = S.form.start; }
   if (el.dataset.k === 'host') { const tot = document.querySelector('.between .small'); if (tot) tot.textContent = `${S.form.names.filter((n) => n.trim()).length + (S.form.host.trim() ? 1 : 0)} / 30명`; }
 };
 actions.fmode = (el) => { S.form.mode = el.dataset.v; render(); };
 actions.fbudget = (el) => { S.form.budget = el.dataset.v; render(); };
 actions.fstyle = (el) => { S.form.style = el.dataset.v; render(); };
-actions.fcount = (el) => { S.form.count = Math.min(10, Math.max(1, S.form.count + Number(el.dataset.v))); render(); };
+actions.fcount = (el) => { S.form.count = Math.min(maxCount(S.form), Math.max(1, S.form.count + Number(el.dataset.v))); render(); };
 actions.fadd = () => { if (S.form.names.length < 29) { S.form.names.push(''); render(); focusName(S.form.names.length - 1); } };
 actions.fdel = (el) => { S.form.names.splice(Number(el.dataset.i), 1); if (!S.form.names.length) S.form.names.push(''); render(); };
 actions.fname = (el) => {
@@ -335,16 +371,20 @@ actions.fsubmit = () => busy(async () => {
   const names = f.names.map((n) => n.trim()).filter(Boolean);
   if (!f.name.trim()) throw new Error(ERR.ROOM_NAME_REQUIRED);
   if (!f.host.trim()) throw new Error(ERR.HOST_NAME_REQUIRED);
-  const all = [f.host.trim(), ...names.filter((n) => n !== f.host.trim())];
-  if (new Set(all).size !== all.length) throw new Error(ERR.DUPLICATE_NAME);
+  const all = [f.host.trim(), ...names.filter((n) => normName(n) !== normName(f.host.trim()))];
+  if (new Set(all.map(normName)).size !== all.length) throw new Error(ERR.DUPLICATE_NAME);
+  const today = todayKST();
   if (all.length < 3) throw new Error(ERR.MIN_3);
   if (all.length > 30) throw new Error(ERR.MAX_30);
   const p = { name: f.name.trim(), host_name: f.host.trim(), mode: f.mode, names };
   if (f.mode === 'mission') {
     if (!f.start || !f.end || f.end < f.start) throw new Error('종료일이 시작일보다 빨라요.');
+    if (f.start < today) throw new Error(ERR.PAST_DATE);
+    if (f.count > maxCount(f)) throw new Error(ERR.MISSION_COUNT_OVER_DAYS);
     Object.assign(p, { start_date: f.start, end_date: f.end, mission_count: f.count, mission_style: f.style });
   } else {
     if (!f.gift) throw new Error('선물 교환하는 날을 골라주세요.');
+    if (f.gift < today) throw new Error(ERR.PAST_DATE);
     let budget = f.budget === '상한 없음' ? '' : f.budget;
     if (f.budget === '직접 입력') {
       const n = Number(String(f.custom).replace(/[^0-9]/g, ''));
@@ -375,8 +415,10 @@ function viewJoin() {
     </div>`;
 }
 actions.join = () => busy(async () => { await rpc('join_room', { p_token: S.token }); await loadRoom(); toast('참여했어요! 🎄'); });
+actions.retry = () => { S.error = null; $app.innerHTML = '<div class="loading">🎄 불러오는 중…</div>'; loadRoom(); };
 function viewError() {
-  const body = `<div class="empty" style="font-size:15px">😢 ${esc(S.error.message)}</div><a class="btn" href="#/">내 방 목록으로</a>`;
+  const retry = ['NETWORK', 'UNKNOWN'].includes(S.error.code) ? '<button class="btn" data-act="retry">🔄 다시 시도</button>' : '';
+  const body = `<div class="empty" style="font-size:15px">😢 ${esc(S.error.message)}</div>${retry}<a class="btn line" href="#/">내 방 목록으로</a>`;
   return shell({ cell: 'A1', fx: '=IFERROR(링크, "다시 받기")', body });
 }
 
@@ -556,7 +598,7 @@ function tabAdmin() {
     return `<div class="tr" style="${cols}"><div class="num">${i + 1}</div>
       <div class="col"><b>${esc(m.name)}${m.is_host ? ' 👑' : ''}</b><span class="small">${state}</span></div>
       ${isMission ? `<div style="font-size:12px;justify-content:center">${m.wish_done ? '<span class="ok">위시✓</span>' : '<span class="small">위시-</span>'}</div>` : ''}
-      <div style="gap:4px;padding:4px;justify-content:flex-end">${m.is_host ? '<span class="small">나</span>' : `<button class="mini" data-act="share" data-id="${m.id}" aria-label="${esc(m.name)}님 링크 보내기">보내기</button><button class="mini warn${S.confirm === 're' + m.id ? ' on' : ''}" data-act="reissue" data-id="${m.id}" aria-label="${esc(m.name)}님 링크 재발급" style="min-width:44px">${S.confirm === 're' + m.id ? '확인' : '↻'}</button>`}</div></div>`;
+      <div style="gap:4px;padding:4px;justify-content:flex-end">${m.is_host ? '<button class="mini" data-act="copyme">내 링크</button>' : `${m.token ? `<button class="mini" data-act="share" data-id="${m.id}" aria-label="${esc(m.name)}님 링크 보내기">보내기</button>` : '<span class="small ok" style="padding:0 4px">전달됨</span>'}<button class="mini warn${S.confirm === 're' + m.id ? ' on' : ''}" data-act="reissue" data-id="${m.id}" aria-label="${esc(m.name)}님 링크 재발급" style="min-width:44px">${S.confirm === 're' + m.id ? '확인' : '↻'}</button>`}</div></div>`;
   }).join('');
   let action = '';
   if (r.status === 'waiting') {
@@ -570,20 +612,21 @@ function tabAdmin() {
     action = `<section class="box red"><b>예상 제출 ${v.guess.submitted}/${v.guess.total}</b><button class="btn line red sm" data-act="reveal">${twoStep('reveal', '🔓 강제로 정답 공개하기', '한 번 더 누르면 공개돼요')}</button></section>`;
   }
   const body = `<div class="stack" style="gap:4px"><h1>🔗 개인 링크 관리</h1><p class="sub">사람마다 링크가 달라요. '보내기'를 눌러 각자에게 카톡으로 보내주세요.</p></div>
+    <div class="note red" role="note"><span aria-hidden="true">👑</span><div class="stack" style="gap:6px"><p><b>대표 링크는 다시 발급할 수 없어요.</b> 잃어버리면 방을 관리할 수 없으니 '내 링크'를 눌러 카톡 나와의 채팅 등에 꼭 저장해두세요.</p></div></div>
     ${action}
     <div class="sheet"><div class="tr th" style="${cols}"><div></div><div>이름 · 상태</div>${isMission ? '<div>위시</div>' : ''}<div style="justify-content:flex-end">링크</div></div>${rows}</div>
-    <p class="small">↻ 재발급: 링크를 잃어버렸거나 잘못 보냈을 때 새 링크를 만들어요. 이전 링크는 바로 막혀요.</p>
+    <p class="small">참여를 마친 사람의 링크는 비밀 유지를 위해 대표에게도 보이지 않아요('전달됨'). ↻ 재발급: 링크를 잃어버렸거나 잘못 보냈을 때 새 링크를 만들어요. 이전 링크는 바로 막혀요.</p>
     <div class="note gray" role="note"><span aria-hidden="true">🔒</span><p>매칭 결과는 대표도 볼 수 없어요. ${isMission ? '정답 공개 때 모두 함께 확인해요.' : '교환하는 날 서로 확인해요.'} 명단을 바꾸려면 새 방을 만들어 주세요.</p></div>`;
   return { cell: '관리', fx: `=참여_현황(${joined}/${h.members.length})`, body };
 }
 actions.share = (el) => {
   const m = S.host.members.find((x) => x.id === el.dataset.id);
-  const text = inviteText(S.view.room.name, m.name, m.token);
-  if (navigator.share) {
-    navigator.share({ title: '마니또 초대', text }).catch(() => {});
-  } else {
-    copyText(text).then((ok) => toast(ok ? `${m.name}님 링크를 복사했어요. 카톡에 붙여넣으세요 📋` : '복사에 실패했어요'));
-  }
+  if (!m || !m.token) return;
+  shareOrCopy(inviteText(S.view.room.name, m.name, m.token), `${m.name}님 링크를`);
+};
+actions.copyme = () => {
+  const text = `👑 [${S.view.room.name}] 마니또 대표 링크 (나만 보관)\n${linkFor(S.token)}`;
+  copyText(text).then((ok) => ok ? toast('대표 링크를 복사했어요. 나와의 채팅에 저장해두세요 📌') : showCopyBox(text));
 };
 actions.reissue = (el) => {
   const id = el.dataset.id;
@@ -591,7 +634,7 @@ actions.reissue = (el) => {
   busy(async () => {
     await rpc('reissue_link', { p_token: S.token, p_member: id });
     S.host = await rpc('host_overview', { p_token: S.token });
-    render(); toast('새 링크를 만들었어요. 다시 보내주세요 🔗');
+    render(); toast('새 링크를 만들었어요. 보내기를 눌러 다시 보내주세요 🔗');
   });
 };
 actions.start = () => { if (!armed('start')) return; busy(async () => { await rpc('start_room', { p_token: S.token }); S.tab = null; await loadRoom(); toast('매칭 완료! 🎲 각자 마니또가 공개됐어요'); }); };
@@ -600,7 +643,7 @@ actions.notice = () => {
   const v = S.view;
   const opened = v.missions.filter((m) => m.opened).length;
   const text = `🔔 [${v.room.name}] 미션 ${opened}번이 열렸어요!\n각자 받은 개인 링크로 들어가서 확인해주세요 🎅\n(들키지 않게 몰래! 🤫)`;
-  copyText(text).then((ok) => toast(ok ? '공지 문구를 복사했어요 📋' : '복사에 실패했어요'));
+  copyText(text).then((ok) => ok ? toast('공지 문구를 복사했어요 📋') : showCopyBox(text));
 };
 
 route();

@@ -70,6 +70,14 @@ create table if not exists app.mission_done (
   primary key (member_id, seq)
 );
 
+-- 시작 때 빠진 사람·재발급 전 링크 (안내 문구 구분용)
+create table if not exists app.expired_links (
+  token   text primary key,
+  room_id uuid not null references app.rooms(id) on delete cascade,
+  reason  text not null check (reason in ('started','reissued'))
+);
+
+alter table app.expired_links enable row level security;
 alter table app.missions      enable row level security;
 alter table app.rooms         enable row level security;
 alter table app.members       enable row level security;
@@ -145,7 +153,12 @@ language plpgsql stable as $$
 declare m app.members;
 begin
   select * into m from app.members where token = p_token;
-  if not found then raise exception 'INVALID_LINK'; end if;
+  if not found then
+    if exists (select 1 from app.expired_links where token = p_token and reason = 'started') then
+      raise exception 'ROOM_STARTED';
+    end if;
+    raise exception 'INVALID_LINK';
+  end if;
   return m;
 end $$;
 
@@ -183,7 +196,8 @@ language sql as $$
   delete from app.rooms
    where (status = 'revealed' and revealed_at < now() - interval '30 days')
       or (mode = 'gift' and gift_date < app.today() - 30)
-      or (status = 'waiting' and created_at < now() - interval '60 days');
+      or (status = 'waiting' and created_at < now() - interval '60 days')
+      or (mode = 'mission' and status in ('active','guessing') and end_date < app.today() - 40);
 $$;
 
 revoke all on all functions in schema app from public, anon, authenticated;
@@ -206,7 +220,7 @@ begin
     select btrim(x) from jsonb_array_elements_text(coalesce(p->'names','[]'::jsonb)) x
      where btrim(x) <> '' and btrim(x) <> v_host);
   v_names := array_prepend(v_host, v_names);
-  if exists (select 1 from unnest(v_names) x group by x having count(*) > 1) then
+  if exists (select 1 from unnest(v_names) x group by lower(regexp_replace(x, '\s', '', 'g')) having count(*) > 1) then
     raise exception 'DUPLICATE_NAME';
   end if;
   if exists (select 1 from unnest(v_names) x where char_length(x) > 20) then
@@ -222,12 +236,15 @@ begin
     v_count := (p->>'mission_count')::int;
     v_style := p->>'mission_style';
     if v_start is null or v_end is null or v_end < v_start then raise exception 'BAD_DATES'; end if;
+    if v_start < app.today() then raise exception 'PAST_DATE'; end if;
     if v_count is null or v_count < 1 or v_count > 10 then raise exception 'BAD_MISSION_COUNT'; end if;
+    if v_count > v_end - v_start + 1 then raise exception 'MISSION_COUNT_OVER_DAYS'; end if;
     if v_style not in ('대면','비대면') then raise exception 'BAD_MISSION_STYLE'; end if;
   elsif v_mode = 'gift' then
     v_gift := (p->>'gift_date')::date;
     v_budget := left(btrim(coalesce(p->>'budget','')), 20);
     if v_gift is null then raise exception 'BAD_DATES'; end if;
+    if v_gift < app.today() then raise exception 'PAST_DATE'; end if;
   else
     raise exception 'BAD_MODE';
   end if;
@@ -382,7 +399,9 @@ begin
   perform app.refresh_room(m.room_id);
   select * into r from app.rooms where id = m.room_id;
   select coalesce(jsonb_agg(jsonb_build_object(
-           'id', x.id, 'name', x.name, 'token', x.token,
+           'id', x.id, 'name', x.name,
+           -- 참여를 마친 사람의 링크는 대표에게도 보여주지 않는다 (대표 본인 제외)
+           'token', case when x.joined_at is null or x.id = r.host_member_id then x.token end,
            'joined', x.joined_at is not null,
            'wish_done', cardinality(x.wishes) > 0,
            'guessed', x.guess_id is not null,
@@ -401,9 +420,15 @@ begin
   m := app.host_by_token(p_token);
   select * into r from app.rooms where id = m.room_id for update;
   if r.status <> 'waiting' then raise exception 'ALREADY_STARTED'; end if;
+  if (r.mode = 'mission' and app.today() > r.end_date) or (r.mode = 'gift' and app.today() > r.gift_date) then
+    raise exception 'PERIOD_OVER';
+  end if;
   if (select count(*) from app.members where room_id = r.id and joined_at is not null) < 3 then
     raise exception 'MIN_3_JOINED';
   end if;
+  insert into app.expired_links (token, room_id, reason)
+  select token, room_id, 'started' from app.members where room_id = r.id and joined_at is null
+  on conflict do nothing;
   delete from app.members where room_id = r.id and joined_at is null;
   ids := array(select id from app.members where room_id = r.id order by created_at);
   n := cardinality(ids);
@@ -435,11 +460,15 @@ end $$;
 -- 대표: 개인 링크 재발급 (이전 링크는 바로 무효)
 create or replace function public.reissue_link(p_token text, p_member uuid) returns text
 language plpgsql security definer set search_path = app, public, extensions as $$
-declare m app.members; v text := app.new_token();
+declare m app.members; v text := app.new_token(); v_old text;
 begin
   m := app.host_by_token(p_token);
-  update app.members set token = v where id = p_member and room_id = m.room_id;
+  if p_member = m.id then raise exception 'BAD_MEMBER'; end if;
+  select token into v_old from app.members where id = p_member and room_id = m.room_id;
   if not found then raise exception 'BAD_MEMBER'; end if;
+  insert into app.expired_links (token, room_id, reason) values (v_old, m.room_id, 'reissued') on conflict do nothing;
+  -- 새 링크는 다시 '참여하기'를 거치게 해서 대표 화면에 링크가 보이게 한다
+  update app.members set token = v, joined_at = null where id = p_member;
   return v;
 end $$;
 

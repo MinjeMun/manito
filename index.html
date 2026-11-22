@@ -11,11 +11,17 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&family=IBM+Plex+Mono:wght@400;600&display=swap">
-<link rel="stylesheet" href="./style.css">
+<link rel="stylesheet" href="./style.css?v=2">
 </head>
 <body>
 <div id="app" class="app"><div class="loading">🎄 불러오는 중…</div></div>
 <div id="toast" class="toast" role="status" aria-live="polite"></div>
-<script type="module" src="./app.js"></script>
+<script>
+setTimeout(function () {
+  if (window.__appReady) return;
+  document.getElementById('app').innerHTML = '<div class="boot-fail"><div style="font-size:40px">😢</div><b>사이트를 불러오지 못했어요</b><span style="font-size:14px;color:#4D5A52">인터넷 연결을 확인하고 다시 시도해주세요.<br>카톡 안에서 안 열리면 오른쪽 위 메뉴에서<br>\'다른 브라우저로 열기\'를 눌러주세요.</span><button class="btn" style="max-width:240px" onclick="location.reload()">🔄 다시 시도</button></div>';
+}, 10000);
+</script>
+<script type="module" src="./app.js?v=2"></script>
 </body>
 </html>

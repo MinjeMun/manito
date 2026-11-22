@@ -77,10 +77,10 @@ select.input{border:2px solid var(--green)}
 .kv>div{padding:12px;border-bottom:1px solid var(--grid)}
 .kv>div:nth-last-child(-n+2){border-bottom:0}
 .kv>div:nth-child(odd){background:var(--head);color:var(--muted);font-weight:700;border-right:1px solid var(--grid)}
-.stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));border:1px solid var(--grid)}
-.stats>div{padding:10px 12px;border-right:1px solid var(--grid);display:flex;flex-direction:column;gap:2px;font-size:12px;color:var(--muted)}
+.stats{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr) minmax(0,1fr);border:1px solid var(--grid)}
+.stats>div{padding:10px 8px;min-width:0;border-right:1px solid var(--grid);display:flex;flex-direction:column;gap:2px;font-size:12px;color:var(--muted)}
 .stats>div:last-child{border-right:0}
-.stats b{font-size:15px;color:var(--ink);font-family:var(--mono)}
+.stats b{font-size:14px;color:var(--ink);font-family:var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .pill{font-size:12px;font-weight:700;padding:3px 8px;border-radius:4px;white-space:nowrap}
 .pill.g{background:var(--green);color:#fff}.pill.r{background:var(--red-l);color:var(--red-d)}.pill.n{background:#E6E9E7;color:#3A453F}
 .ok{color:var(--green);font-weight:700}.no{color:var(--red);font-weight:700}
@@ -143,3 +143,8 @@ select.input{border:2px solid var(--green)}
 
 .toast{position:fixed;left:50%;bottom:84px;transform:translateX(-50%) translateY(20px);background:#1C2420;color:#fff;padding:12px 18px;border-radius:24px;font-size:14px;opacity:0;pointer-events:none;transition:all .25s;z-index:50;max-width:90vw;text-align:center}
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+
+.copybox{position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:60;padding:20px}
+.copycard{background:#fff;border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:10px;width:100%;max-width:400px}
+.copycard textarea{width:100%;border:1px solid var(--line);border-radius:6px;padding:8px;font-size:14px}
+.boot-fail{padding:60px 20px;text-align:center;display:flex;flex-direction:column;gap:14px;align-items:center;color:var(--ink);line-height:1.7}
